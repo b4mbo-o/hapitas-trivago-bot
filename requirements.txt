@@ -1,0 +1,4 @@
+selenium
+webdriver-manager
+# optional, より検出対策を強化したい場合:
+undetected-chromedriver
