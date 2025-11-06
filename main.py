@@ -21,8 +21,8 @@ HOMEPAGE = "https://hapitas.jp/"
 LOGIN_URL = "https://hapitas.jp/auth/signin/"
 
 # credentials as requested
-LOGIN_EMAIL = "paarunowkey@gmail.com"
-LOGIN_PASSWORD = "anaste1204"
+LOGIN_EMAIL = "hogehoge@gmail.com"
+LOGIN_PASSWORD = "root1234"
 
 
 def pick_user_agent() -> str:
