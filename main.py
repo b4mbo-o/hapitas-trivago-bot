@@ -121,6 +121,65 @@ def human_like_wait(min_s=0.5, max_s=1.8):
     time.sleep(random.uniform(min_s, max_s))
 
 
+def click_accept_button(driver, timeout=8):
+    """
+    ページ上の Cookie 同意ダイアログの「OK」ボタンを確実に押すユーティリティ。
+    タイムアウト内で複数セレクタを試行し、表示されているボタンを JS click で確実に押す。
+    """
+    start = time.time()
+    selectors = [
+        'button[data-action="consent"][data-action-type="accept"]',
+        'button.accept.uc-accept-button',
+        '#accept',
+        'button.uc-accept-button',
+        "//button[normalize-space(.)='OK']",
+        "footer .buttons .accept",
+        "#uc-main-dialog button[data-action-type='accept']",
+    ]
+    while time.time() - start < timeout:
+        for sel in selectors:
+            try:
+                if sel.startswith("//"):
+                    els = driver.find_elements(By.XPATH, sel)
+                else:
+                    els = driver.find_elements(By.CSS_SELECTOR, sel)
+            except Exception:
+                els = []
+            for el in els:
+                try:
+                    if not el.is_displayed() or not el.is_enabled():
+                        continue
+                    # スクロールして視認位置に移し、JSでクリック（より確実）
+                    try:
+                        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
+                        human_like_wait(0.15, 0.4)
+                    except Exception:
+                        pass
+                    try:
+                        driver.execute_script("arguments[0].click();", el)
+                    except Exception:
+                        # fallback to ActionChains click
+                        try:
+                            ActionChains(driver).move_to_element(el).click().perform()
+                        except Exception:
+                            continue
+                    # 押した後、ボタンやダイアログが消えるまで短く待つ
+                    human_like_wait(0.6, 1.2)
+                    # 確認: 同意ダイアログが消えたかをチェック
+                    try:
+                        # if uc-main-dialog not present or not displayed -> success
+                        dlg = driver.find_elements(By.ID, "uc-main-dialog")
+                        if not dlg or not dlg[0].is_displayed():
+                            return True
+                    except Exception:
+                        return True
+                except Exception:
+                    continue
+        # 見つからなかった／消えなかった場合は短く待って再試行
+        human_like_wait(0.4, 0.9)
+    return False
+
+
 def main():
     cookies = load_cookies(COOKIE_FILE)
     driver = make_driver()
@@ -197,7 +256,7 @@ def main():
 
             human_like_wait(0.8, 1.6)
 
-            # If the link opens in a new tab, switch to it, wait, scroll down a few times, then close
+            # If the link opens in a new tab, switch to it, wait, scroll down a few times, then interact and close
             handles = driver.window_handles
             if len(handles) > 1:
                 new_handle = handles[-1]
@@ -205,37 +264,151 @@ def main():
                 driver.switch_to.window(new_handle)
 
                 # Wait for the page to load (at least 5s as requested)
-                human_like_wait(5.0, 5.5)
+                human_like_wait(5.0, 6.0)
+
+                # --- 変更: スライド開始前に必ず「OK」を押す ---
+                try:
+                    ok_clicked = click_accept_button(driver, timeout=8)
+                    if ok_clicked:
+                        print("Consent OK clicked.")
+                    else:
+                        print("Consent OK not found or not clickable (timed out).")
+                except Exception as e:
+                    print("error while clicking consent OK:", e)
+                # --- ここまで ---
 
                 # Perform a few human-like scrolls/swipes down the page
                 try:
-                    # number of scroll actions
                     n_scrolls = random.randint(3, 7)
                     for _ in range(n_scrolls):
-                        # scroll by a random amount (px)
                         scroll_px = random.randint(300, 900)
-                        driver.execute_script("window.scrollBy({left: 0, top: arguments[0], behavior: 'smooth'});", scroll_px)
-                        # small human-like pause between swipes
+                        driver.execute_script(
+                            "window.scrollBy({left: 0, top: arguments[0], behavior: 'smooth'});",
+                            scroll_px,
+                        )
                         human_like_wait(0.6, 1.6)
-                    # final small pause to simulate reading
-                    human_like_wait(2.0, 4.0)
+                    human_like_wait(1.5, 3.0)
                 except Exception:
-                    # fallback: send PAGE_DOWN a few times
                     for _ in range(random.randint(2, 5)):
                         ActionChains(driver).send_keys(Keys.PAGE_DOWN).perform()
                         human_like_wait(0.5, 1.2)
 
-                # Close the new tab and switch back
+                # 1) Click the "料金プランをチェック" CTA (first one / visible)
                 try:
-                    driver.close()
-                except Exception:
-                    pass
-                # switch back to the original window
+                    cta_sel = 'button[data-action="ctaButton"], button.VHolYY.tjDLq2.e4r_YY.IKMUBE'
+                    cta_btn = WebDriverWait(driver, 8).until(
+                        EC.element_to_be_clickable((By.CSS_SELECTOR, cta_sel))
+                    )
+                    actions = ActionChains(driver)
+                    actions.move_to_element(cta_btn).pause(random.uniform(0.2, 0.6))
+                    actions.move_by_offset(random.randint(-4, 4), random.randint(-3, 3)).pause(0.1)
+                    actions.click().perform()
+                    human_like_wait(5.0, 6.0)
+                except Exception as e:
+                    print("CTA click failed:", e)
+
+                # 2) スライド内の「料金を見る」ボタンを探してランダムにクリック（スライド領域内に限定）
                 try:
-                    driver.switch_to.window(original_handle)
-                except Exception:
-                    if driver.window_handles:
+                    # スライドが開くのを待つ（result-list-ready またはスライドアウトセクション）
+                    slide_container = None
+                    try:
+                        slide_container = WebDriverWait(driver, 8).until(
+                            lambda d: d.find_element(By.CSS_SELECTOR, "section._5Gfu3K, div[data-testid='result-list-ready'], div[data-testid='deals-slideout'], div[data-testid='all-slideout-deals']")
+                        )
+                    except Exception:
+                        # 見つからなくても次の検索でページ全体を対象にする
+                        slide_container = None
+
+                    if slide_container:
+                        view_buttons = slide_container.find_elements(
+                            By.XPATH,
+                            ".//button[contains(normalize-space(.),'料金を見る') or contains(normalize-space(.),'料金を見る')]"
+                        )
+                    else:
+                        view_buttons = driver.find_elements(
+                            By.XPATH,
+                            "//button[contains(normalize-space(.),'料金を見る')]"
+                        )
+
+                    # 最終手段: data-testid 属性で探す
+                    if not view_buttons:
+                        view_buttons = driver.find_elements(By.CSS_SELECTOR, 'button[data-testid="champion-deal"], button[data-cos="viewDealButton"], button[data-testid="clickOutButton"]')
+
+                    if view_buttons:
+                        picked = random.choice(view_buttons)
+                        # スムーズにスクロールして可視化→クリック
+                        try:
+                            driver.execute_script("arguments[0].scrollIntoView({behavior:'smooth', block:'center'});", picked)
+                        except Exception:
+                            pass
+                        human_like_wait(0.3, 0.9)
+                        actions = ActionChains(driver)
+                        actions.move_to_element(picked).pause(random.uniform(0.15, 0.6))
+                        actions.move_by_offset(random.randint(-3, 3), random.randint(-2, 2)).pause(0.05)
+                        actions.click().perform()
+                        human_like_wait(1.0, 2.5)
+                    else:
+                        print("slideout: '料金を見る' ボタンが見つかりませんでした")
+                except Exception as e:
+                    print("champion-deal / slideout click failed:", e)
+
+                # 3) On the deals list, randomly pick one "料金プランをチェック" and click it
+                try:
+                    # Prefer buttons containing the label text, fallback to known class
+                    plan_buttons = driver.find_elements(
+                        By.XPATH,
+                        "//button[contains(normalize-space(.),'料金プランをチェック')] | //button[contains(@class,'VHolYY')]",
+                    )
+                    if plan_buttons:
+                        pick = random.choice(plan_buttons)
+                        # scroll into view and click
+                        driver.execute_script("arguments[0].scrollIntoView({behavior:'smooth', block:'center'});", pick)
+                        human_like_wait(0.5, 1.2)
+                        actions = ActionChains(driver)
+                        actions.move_to_element(pick).pause(random.uniform(0.2, 0.6))
+                        actions.click().perform()
+                        human_like_wait(3.0, 5.0)
+                    else:
+                        print("no plan buttons found to click")
+                except Exception as e:
+                    print("random plan click failed:", e)
+
+                # allow a short extra read time, then close the tab and switch back
+                human_like_wait(5.0, 6.0)
+                try:
+                    # Close all open tabs/windows that are not the hapitas domain.
+                    # Keep the original_handle (hapitas) open and switch back to it.
+                    handles_now = list(driver.window_handles)
+                    for h in handles_now:
+                        try:
+                            driver.switch_to.window(h)
+                            url = ""
+                            try:
+                                url = driver.current_url or ""
+                            except Exception:
+                                url = ""
+                            # If the current tab is not hapitas, close it
+                            if "hapitas.jp" not in url:
+                                try:
+                                    driver.close()
+                                except Exception:
+                                    pass
+                        except Exception:
+                            # ignore any switch/close errors and continue
+                            continue
+
+                    # Ensure we switch back to the original hapitas tab if possible
+                    if original_handle in driver.window_handles:
+                        driver.switch_to.window(original_handle)
+                    elif driver.window_handles:
                         driver.switch_to.window(driver.window_handles[0])
+                except Exception:
+                    # fallback: try to leave at least one window open
+                    try:
+                        if driver.window_handles:
+                            driver.switch_to.window(driver.window_handles[0])
+                    except Exception:
+                        pass
 
             # Random wait between iterations to simulate human variability
             ITER_MIN = 5.0   # seconds (adjust as needed)
